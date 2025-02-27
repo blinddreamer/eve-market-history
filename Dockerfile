@@ -19,4 +19,4 @@ COPY cronjob /etc/cron.d/eve_cron
 RUN chmod 0644 /etc/cron.d/eve_cron && crontab /etc/cron.d/eve_cron
 
 # Start cron and the script
-CMD cron && tail -f /var/log/cron.log
+CMD touch /var/log/cron.log && cron && tail -f /var/log/cron.log
