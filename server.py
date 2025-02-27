@@ -1,7 +1,6 @@
 import requests
 import pymysql
 import os
-import time
 from datetime import datetime
 
 # Load character details from environment variables
@@ -111,31 +110,21 @@ def save_to_mariadb(transactions):
     cursor.close()
     conn.close()
 
-def main():
-    """Fetch and store transactions every 24 hours."""
-    while True:
-        print(f"⏳ Running transaction update at {datetime.now()}")
-
-        for character in CHARACTERS:
-            if not character["CLIENT_ID"]:
-                print(f"⚠️ Skipping character due to missing environment variables.")
-                continue
-
-            print(f"🔄 Refreshing access token for {character['CHARACTER_ID']}...")
-            access_token = get_access_token(character["CLIENT_ID"], character["CLIENT_SECRET"], character["REFRESH_TOKEN"])
-            
-            print(f"📥 Fetching transactions for {character['CHARACTER_ID']} from EVE API...")
-            transactions = fetch_transactions(access_token, character["CHARACTER_ID"])
-            
-            if transactions:
-                print(f"💾 Storing {len(transactions)} transactions for {character['CHARACTER_ID']} in MariaDB...")
-                save_to_mariadb(transactions)
-                print(f"✅ Data for {character['CHARACTER_ID']} successfully saved!")
-            else:
-                print(f"⚠️ No new transactions found for {character['CHARACTER_ID']}.")
-
-        print("⏳ Sleeping for 24 hours...\n")
-        time.sleep(86400)  # Sleep for 24 hours
-
 if __name__ == "__main__":
-    main()
+    for character in CHARACTERS:
+        if not character["CLIENT_ID"]:  # Skip if env vars are not set
+            print(f"⚠️ Skipping character due to missing environment variables.")
+            continue
+
+        print(f"🔄 Refreshing access token for {character['CHARACTER_ID']}...")
+        access_token = get_access_token(character["CLIENT_ID"], character["CLIENT_SECRET"], character["REFRESH_TOKEN"])
+        
+        print(f"📥 Fetching transactions for {character['CHARACTER_ID']} from EVE API...")
+        transactions = fetch_transactions(access_token, character["CHARACTER_ID"])
+        
+        if transactions:
+            print(f"💾 Storing {len(transactions)} transactions for {character['CHARACTER_ID']} in MariaDB...")
+            save_to_mariadb(transactions)
+            print(f"✅ Data for {character['CHARACTER_ID']} successfully saved!")
+        else:
+            print(f"⚠️ No new transactions found for {character['CHARACTER_ID']}.")
