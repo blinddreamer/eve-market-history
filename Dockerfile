@@ -9,6 +9,9 @@ COPY . .
 # Install dependencies
 RUN pip install -r requirements.txt
 
+# Ensure python3 is installed and create a symlink
+RUN apt-get update && apt-get install -y python3 python3-pip && ln -s /usr/bin/python3 /usr/bin/python
+
 # Install cron and rsyslog for logging
 RUN apt-get update && apt-get install -y cron rsyslog && rm -rf /var/lib/apt/lists/*
 

@@ -1,1 +1,4 @@
-0 0 * * * python /app/server.py >> /var/log/cron.log 2>&1
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+0 0 * * * python3 /app/server.py >> /var/log/cron.log 2>&1
