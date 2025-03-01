@@ -9,23 +9,20 @@ COPY . .
 # Install dependencies
 RUN pip install -r requirements.txt
 
-# Ensure python3 is installed and create a symlink
-RUN apt-get update && apt-get install -y python3 python3-pip && ln -s /usr/bin/python3 /usr/bin/python
+# Install cron
+RUN apt-get update && apt-get install -y cron && rm -rf /var/lib/apt/lists/*
 
-# Install cron and rsyslog for logging
-RUN apt-get update && apt-get install -y cron rsyslog && rm -rf /var/lib/apt/lists/*
-
-# Ensure the cron log file exists
+# Ensure log file exists
 RUN touch /var/log/cron.log
 
 # Copy cron job file
 COPY cronjob /etc/cron.d/eve_cron
 
-# Give proper permissions and register cron job
+# Give execution permissions
 RUN chmod 0644 /etc/cron.d/eve_cron && crontab /etc/cron.d/eve_cron
 
-# Ensure cron logs are enabled in rsyslog
-RUN echo "cron.* /var/log/cron.log" >> /etc/rsyslog.conf
+# Ensure environment variables are available to cron
+RUN printenv > /etc/environment
 
-# Start rsyslog, cron, and keep container running
-CMD service rsyslog start && cron && tail -f /var/log/cron.log
+# Start cron and keep the container running
+CMD cron && tail -f /var/log/cron.log

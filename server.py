@@ -3,6 +3,11 @@ import pymysql
 import os
 from datetime import datetime
 
+# Debugging: Print all environment variables
+print("📌 Environment Variables Loaded in Python:")
+for key, value in os.environ.items():
+    print(f"{key}={value}")
+
 # Load character details from environment variables
 CHARACTERS = [
     {

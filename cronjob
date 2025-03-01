@@ -1,4 +1,5 @@
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-0 0 * * * python3 /app/server.py >> /var/log/cron.log 2>&1
+# Load environment variables before running the script
+0 0 * * * . /etc/environment && python3 /app/server.py >> /var/log/cron.log 2>&1
