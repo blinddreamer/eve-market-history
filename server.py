@@ -148,6 +148,8 @@ def save_to_mariadb(transactions):
 
 def run_fetcher():
     """Main function to fetch and save transactions every 24 hours."""
+    print(f"🚀 Fetcher started at {datetime.now()} — first run starting now.")
+    
     while True:
         print(f"⏳ Starting transaction fetch at {datetime.now()}...")
         
@@ -169,8 +171,12 @@ def run_fetcher():
             else:
                 print(f"⚠️ No new transactions found for {character['CHARACTER_ID']}.")
 
-        print("⏸️ Sleeping for 24 hours...")
-        time.sleep(86400)  # Sleep for 24 hours
+        # Sleep with countdown logging
+        sleep_seconds = 86400  # 24 hours
+        for remaining in range(sleep_seconds, 0, -3600):
+            hours_left = remaining // 3600
+            print(f"🕒 Next run in {hours_left} hour(s)...")
+            time.sleep(3600)
 
 
 if __name__ == "__main__":
