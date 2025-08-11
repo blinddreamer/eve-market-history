@@ -3,6 +3,10 @@ import pymysql
 import os
 import time
 from datetime import datetime
+import sys
+import traceback
+
+print("🐍 Script import started...")  # DEBUG 0
 
 # Load character details from environment variables
 CHARACTERS = [
@@ -28,7 +32,7 @@ DB_NAME = os.getenv("DB_NAME", "eve")
 
 
 def get_access_token(client_id, client_secret, refresh_token):
-    """Fetch a new access token using the refresh token."""
+    print(f"🔑 Getting access token for {client_id}...")  # DEBUG
     url = "https://login.eveonline.com/v2/oauth/token"
     data = {
         "grant_type": "refresh_token",
@@ -47,7 +51,7 @@ def get_access_token(client_id, client_secret, refresh_token):
 
 
 def fetch_transactions(access_token, character_id):
-    """Retrieve market transactions from the ESI API."""
+    print(f"🌐 Fetching transactions for char {character_id}...")  # DEBUG
     url = f"https://esi.evetech.net/latest/characters/{character_id}/wallet/transactions/"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -55,7 +59,7 @@ def fetch_transactions(access_token, character_id):
     }
 
     response = requests.get(url, headers=headers)
-    
+
     if response.status_code == 200:
         return response.json()
     else:
@@ -63,15 +67,14 @@ def fetch_transactions(access_token, character_id):
 
 
 def convert_datetime(iso_date):
-    """Convert ISO 8601 datetime format to MySQL datetime format."""
     try:
         return datetime.strptime(iso_date, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
-        return None  
+        return None
 
 
 def save_to_mariadb(transactions):
-    """Save transaction data into MariaDB with batching, retry, and logging."""
+    print(f"💾 Saving {len(transactions)} transactions...")  # DEBUG
     attempts = 3
     for attempt in range(attempts):
         try:
@@ -131,15 +134,15 @@ def save_to_mariadb(transactions):
 
             if values:
                 cursor.executemany(sql, values)
-                print(f"💾 {len(values)} transactions processed.")
+                print(f"✅ {len(values)} transactions processed.")
 
             conn.commit()
             cursor.close()
             conn.close()
-            return  # Success
+            return
 
         except pymysql.err.OperationalError as e:
-            print(f"⚠️ Database connection lost (attempt {attempt+1}/{attempts}): {e}")
+            print(f"⚠️ DB connection lost (attempt {attempt+1}/{attempts}): {e}")
             if attempt < attempts - 1:
                 time.sleep(3)
             else:
@@ -147,37 +150,32 @@ def save_to_mariadb(transactions):
 
 
 def run_fetcher():
-    """Main function to fetch and save transactions every 24 hours."""
-    print(f"🚀 Fetcher started at {datetime.now()} — first run starting now.")
-    
+    print(f"🚀 Fetcher started at {datetime.now()} — first run starting now.")  # DEBUG start
+
     while True:
         print(f"⏳ Starting transaction fetch at {datetime.now()}...")
-        
+
         for character in CHARACTERS:
-            if not character["CLIENT_ID"]:  # Skip if env vars are not set
+            if not character["CLIENT_ID"]:
                 print(f"⚠️ Skipping character due to missing environment variables.")
                 continue
 
-            print(f"🔄 Refreshing access token for {character['CHARACTER_ID']}...")
-            access_token = get_access_token(character["CLIENT_ID"], character["CLIENT_SECRET"], character["REFRESH_TOKEN"])
-            
-            print(f"📥 Fetching transactions for {character['CHARACTER_ID']} from EVE API...")
-            transactions = fetch_transactions(access_token, character["CHARACTER_ID"])
-            
-            if transactions:
-                print(f"💾 Storing {len(transactions)} transactions for {character['CHARACTER_ID']} in MariaDB...")
-                save_to_mariadb(transactions)
-                print(f"✅ Data for {character['CHARACTER_ID']} successfully saved!")
-            else:
-                print(f"⚠️ No new transactions found for {character['CHARACTER_ID']}.")
+            try:
+                access_token = get_access_token(character["CLIENT_ID"], character["CLIENT_SECRET"], character["REFRESH_TOKEN"])
+                transactions = fetch_transactions(access_token, character["CHARACTER_ID"])
+                if transactions:
+                    save_to_mariadb(transactions)
+                else:
+                    print(f"⚠️ No new transactions for {character['CHARACTER_ID']}.")
+            except Exception as e:
+                print(f"❌ Error processing character {character['CHARACTER_ID']}: {e}")
+                traceback.print_exc(file=sys.stdout)
 
-        # Sleep with countdown logging
-        sleep_seconds = 86400  # 24 hours
-        for remaining in range(sleep_seconds, 0, -3600):
-            hours_left = remaining // 3600
-            print(f"🕒 Next run in {hours_left} hour(s)...")
+        for remaining in range(86400, 0, -3600):
+            print(f"🕒 Next run in {remaining // 3600} hour(s)...")
             time.sleep(3600)
 
 
 if __name__ == "__main__":
+    print("📢 Script running directly, calling run_fetcher()")  # DEBUG
     run_fetcher()
