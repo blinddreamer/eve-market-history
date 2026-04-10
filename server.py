@@ -62,6 +62,39 @@ def get_access_token(client_id, client_secret, refresh_token):
     return tokens["access_token"]
 
 
+def resolve_type_names(type_ids):
+    """
+    Batch-resolve type_ids to item names via ESI /universe/names/.
+    ESI accepts up to 1000 IDs per request.
+    Returns a dict: {type_id: name}
+    """
+    if not type_ids:
+        return {}
+
+    names = {}
+    ids = list(set(type_ids))
+
+    for i in range(0, len(ids), 1000):
+        batch = ids[i:i + 1000]
+        try:
+            response = requests.post(
+                "https://esi.evetech.net/latest/universe/names/",
+                json=batch,
+                timeout=30
+            )
+            if response.status_code == 200:
+                for entry in response.json():
+                    if entry.get("category") == "inventory_type":
+                        names[entry["id"]] = entry["name"]
+            else:
+                log.warning(f"ESI /universe/names/ returned {response.status_code} for batch of {len(batch)} IDs")
+        except Exception:
+            log.exception(f"Failed to resolve type names for batch starting at index {i}")
+
+    log.info(f"Resolved {len(names)}/{len(ids)} item names from ESI.")
+    return names
+
+
 def fetch_transactions(access_token, character_id):
     """
     Fetch all wallet transactions for a character, handling ESI pagination.
@@ -159,6 +192,11 @@ def ensure_table(cursor):
 
 def save_to_mariadb(transactions, character_id):
     log.info(f"Saving {len(transactions)} transactions for character {character_id}...")
+
+    # Resolve item names from type_ids via ESI
+    type_ids = [tx["type_id"] for tx in transactions if "type_id" in tx]
+    type_names = resolve_type_names(type_ids)
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -185,12 +223,13 @@ def save_to_mariadb(transactions, character_id):
         skipped = 0
         for tx in transactions:
             try:
+                type_id = tx["type_id"]
                 values.append((
                     tx["transaction_id"],
                     character_id,
                     convert_datetime(tx["date"]),
-                    tx["type_id"],
-                    tx.get("type_name", "Unknown"),
+                    type_id,
+                    type_names.get(type_id, f"Unknown ({type_id})"),
                     tx["unit_price"],
                     tx["quantity"],
                     tx["client_id"],
