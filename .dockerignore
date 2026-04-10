@@ -1,0 +1,28 @@
+# Git
+.git/
+.gitignore
+.github/
+
+# Environment variables
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# One-off / dev scripts — not needed in the container
+setup_metabase.py
+backfill_names.py
+
+# IDEs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
