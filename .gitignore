@@ -21,6 +21,7 @@ env/
 # Local utility scripts
 setup_metabase.py
 backfill_names.py
+auth_characters.py
 
 # OS
 .DS_Store

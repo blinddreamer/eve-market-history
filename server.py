@@ -17,18 +17,39 @@ log = logging.getLogger(__name__)
 
 
 def load_characters():
-    """Dynamically load characters from env vars: CLIENT_ID_1, CLIENT_ID_2, ..."""
+    """
+    Load characters from env vars. Supports two layouts:
+
+    Shared app (one CLIENT_ID / CLIENT_SECRET for all characters):
+        CLIENT_ID=xxx
+        CLIENT_SECRET=yyy
+        CHARACTER_ID_1=111  REFRESH_TOKEN_1=aaa
+        CHARACTER_ID_2=222  REFRESH_TOKEN_2=bbb
+
+    Per-character apps (legacy):
+        CLIENT_ID_1=xxx  CLIENT_SECRET_1=yyy  CHARACTER_ID_1=111  REFRESH_TOKEN_1=aaa
+        CLIENT_ID_2=xxx  CLIENT_SECRET_2=yyy  CHARACTER_ID_2=222  REFRESH_TOKEN_2=bbb
+    """
+    shared_id     = os.getenv("CLIENT_ID")
+    shared_secret = os.getenv("CLIENT_SECRET")
+
     characters = []
     i = 1
     while True:
-        client_id = os.getenv(f"CLIENT_ID_{i}")
-        if not client_id:
+        character_id = os.getenv(f"CHARACTER_ID_{i}")
+        refresh_token = os.getenv(f"REFRESH_TOKEN_{i}")
+        if not character_id or not refresh_token:
             break
+
+        # Prefer per-character creds if present, fall back to shared
+        client_id     = os.getenv(f"CLIENT_ID_{i}")     or shared_id
+        client_secret = os.getenv(f"CLIENT_SECRET_{i}") or shared_secret
+
         characters.append({
-            "CLIENT_ID": client_id,
-            "CLIENT_SECRET": os.getenv(f"CLIENT_SECRET_{i}"),
-            "REFRESH_TOKEN": os.getenv(f"REFRESH_TOKEN_{i}"),
-            "CHARACTER_ID": os.getenv(f"CHARACTER_ID_{i}")
+            "CLIENT_ID":     client_id,
+            "CLIENT_SECRET": client_secret,
+            "REFRESH_TOKEN": refresh_token,
+            "CHARACTER_ID":  character_id,
         })
         i += 1
     return characters
