@@ -18,6 +18,10 @@ env/
 .idea/
 *.iml
 
+# Local utility scripts
+setup_metabase.py
+backfill_names.py
+
 # OS
 .DS_Store
 Thumbs.db

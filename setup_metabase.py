@@ -20,6 +20,31 @@ DATABASE_ID = 2
 FILTER_UUID = str(uuid.uuid4())
 
 
+def isk_fmt(*col_names):
+    """Metabase column_settings to display ISK values in billions."""
+    return {
+        "column_settings": {
+            f'["name","{col}"]': {
+                "number_style": "decimal",
+                "decimals": 2,
+                "scale": 1e-9,
+                "suffix": " B",
+            }
+            for col in col_names
+        }
+    }
+
+
+def scalar_isk_fmt():
+    """Metabase viz settings for a scalar ISK card displayed in billions."""
+    return {
+        "number_style": "decimal",
+        "decimals": 2,
+        "scale": 1e-9,
+        "suffix": " B ISK",
+    }
+
+
 def days_tag():
     """Return a fresh template-tag definition for the {{days}} variable."""
     return {
@@ -51,7 +76,7 @@ WHERE date >= NOW() - INTERVAL {{days}} DAY
   AND is_buy_order = 1
             """.strip(),
             "display": "scalar",
-            "viz": {},
+            "viz": scalar_isk_fmt(),
             "layout": {"row": 0, "col": 0, "size_x": 6, "size_y": 4},
         },
         {
@@ -63,7 +88,7 @@ WHERE date >= NOW() - INTERVAL {{days}} DAY
   AND is_buy_order = 0
             """.strip(),
             "display": "scalar",
-            "viz": {},
+            "viz": scalar_isk_fmt(),
             "layout": {"row": 0, "col": 6, "size_x": 6, "size_y": 4},
         },
         {
@@ -76,7 +101,7 @@ FROM market_transactions
 WHERE date >= NOW() - INTERVAL {{days}} DAY
             """.strip(),
             "display": "scalar",
-            "viz": {},
+            "viz": scalar_isk_fmt(),
             "layout": {"row": 0, "col": 12, "size_x": 6, "size_y": 4},
         },
         {
@@ -103,7 +128,7 @@ FROM market_transactions
 WHERE date >= NOW() - INTERVAL {{days}} DAY
             """.strip(),
             "display": "scalar",
-            "viz": {},
+            "viz": scalar_isk_fmt(),
             "layout": {"row": 0, "col": 21, "size_x": 3, "size_y": 4},
         },
 
@@ -128,7 +153,8 @@ ORDER BY day ASC
                 "graph.dimensions": ["day"],
                 "graph.metrics": ["isk_spent", "isk_earned", "daily_profit"],
                 "graph.x_axis.title_text": "Date",
-                "graph.y_axis.title_text": "ISK",
+                "graph.y_axis.title_text": "ISK (Billions)",
+                **isk_fmt("isk_spent", "isk_earned", "daily_profit"),
             },
             "layout": {"row": 4, "col": 0, "size_x": 24, "size_y": 9},
         },
@@ -157,7 +183,8 @@ ORDER BY day ASC
                 "graph.dimensions": ["day"],
                 "graph.metrics": ["cumulative_profit"],
                 "graph.x_axis.title_text": "Date",
-                "graph.y_axis.title_text": "ISK",
+                "graph.y_axis.title_text": "ISK (Billions)",
+                **isk_fmt("cumulative_profit"),
             },
             "layout": {"row": 13, "col": 0, "size_x": 24, "size_y": 9},
         },
@@ -184,7 +211,8 @@ LIMIT 10
                 "graph.dimensions": ["type_name"],
                 "graph.metrics": ["isk_earned"],
                 "graph.x_axis.title_text": "Item",
-                "graph.y_axis.title_text": "ISK Earned",
+                "graph.y_axis.title_text": "ISK Earned (Billions)",
+                **isk_fmt("isk_earned"),
             },
             "layout": {"row": 22, "col": 0, "size_x": 12, "size_y": 8},
         },
@@ -208,7 +236,8 @@ LIMIT 10
                 "graph.dimensions": ["type_name"],
                 "graph.metrics": ["isk_spent"],
                 "graph.x_axis.title_text": "Item",
-                "graph.y_axis.title_text": "ISK Spent",
+                "graph.y_axis.title_text": "ISK Spent (Billions)",
+                **isk_fmt("isk_spent"),
             },
             "layout": {"row": 22, "col": 12, "size_x": 12, "size_y": 8},
         },
