@@ -2,124 +2,192 @@ import requests
 import pymysql
 import os
 import time
+import logging
 from datetime import datetime
-import sys
-import traceback
+from dotenv import load_dotenv
 
-print("🐍 Script import started...")  # DEBUG 0
+load_dotenv()
 
-# Load character details from environment variables
-CHARACTERS = [
-    {
-        "CLIENT_ID": os.getenv("CLIENT_ID_1"),
-        "CLIENT_SECRET": os.getenv("CLIENT_SECRET_1"),
-        "REFRESH_TOKEN": os.getenv("REFRESH_TOKEN_1"),
-        "CHARACTER_ID": os.getenv("CHARACTER_ID_1")
-    },
-    {
-        "CLIENT_ID": os.getenv("CLIENT_ID_2"),
-        "CLIENT_SECRET": os.getenv("CLIENT_SECRET_2"),
-        "REFRESH_TOKEN": os.getenv("REFRESH_TOKEN_2"),
-        "CHARACTER_ID": os.getenv("CHARACTER_ID_2")
-    }
-]
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+log = logging.getLogger(__name__)
 
-# MariaDB Connection Details
+
+def load_characters():
+    """Dynamically load characters from env vars: CLIENT_ID_1, CLIENT_ID_2, ..."""
+    characters = []
+    i = 1
+    while True:
+        client_id = os.getenv(f"CLIENT_ID_{i}")
+        if not client_id:
+            break
+        characters.append({
+            "CLIENT_ID": client_id,
+            "CLIENT_SECRET": os.getenv(f"CLIENT_SECRET_{i}"),
+            "REFRESH_TOKEN": os.getenv(f"REFRESH_TOKEN_{i}"),
+            "CHARACTER_ID": os.getenv(f"CHARACTER_ID_{i}")
+        })
+        i += 1
+    return characters
+
+
+CHARACTERS = load_characters()
+
 DB_HOST = os.getenv("DB_HOST", "borg")
 DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "123")
 DB_NAME = os.getenv("DB_NAME", "eve")
 
+FETCH_INTERVAL_HOURS = int(os.getenv("FETCH_INTERVAL_HOURS", "24"))
+
 
 def get_access_token(client_id, client_secret, refresh_token):
-    print(f"🔑 Getting access token for {client_id}...")  # DEBUG
     url = "https://login.eveonline.com/v2/oauth/token"
-    data = {
+    response = requests.post(url, data={
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": client_id,
         "client_secret": client_secret
-    }
+    }, timeout=30)
 
-    response = requests.post(url, data=data)
+    if not response.ok:
+        raise Exception(f"Token endpoint returned HTTP {response.status_code}: {response.text}")
+
     tokens = response.json()
-
-    if "access_token" in tokens:
-        return tokens["access_token"]
-    else:
-        raise Exception(f"Failed to refresh token: {tokens}")
+    if "access_token" not in tokens:
+        raise Exception(f"No access_token in response: {tokens}")
+    return tokens["access_token"]
 
 
 def fetch_transactions(access_token, character_id):
-    print(f"🌐 Fetching transactions for char {character_id}...")  # DEBUG
-    url = f"https://esi.evetech.net/latest/characters/{character_id}/wallet/transactions/"
+    """
+    Fetch all wallet transactions for a character, handling ESI pagination.
+    ESI wallet/transactions uses from_id to page through older records.
+    """
+    base_url = f"https://esi.evetech.net/latest/characters/{character_id}/wallet/transactions/"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json"
     }
 
-    response = requests.get(url, headers=headers)
+    all_transactions = []
+    from_id = None
 
-    if response.status_code == 200:
-        return response.json()
-    else:
-        raise Exception(f"Failed to fetch transactions: {response.text}")
+    while True:
+        params = {}
+        if from_id is not None:
+            params["from_id"] = from_id
+
+        response = requests.get(base_url, headers=headers, params=params, timeout=30)
+
+        if response.status_code == 420:
+            retry_after = int(response.headers.get("X-ESI-Error-Limit-Reset", 60))
+            log.warning(f"ESI error limit reached for character {character_id}. Waiting {retry_after}s...")
+            time.sleep(retry_after)
+            continue
+
+        if response.status_code != 200:
+            raise Exception(f"ESI returned HTTP {response.status_code}: {response.text}")
+
+        page_data = response.json()
+        if not page_data:
+            break
+
+        all_transactions.extend(page_data)
+
+        # ESI returns up to 2500 per page; if we got a full page, fetch older records
+        if len(page_data) < 2500:
+            break
+
+        from_id = min(tx["transaction_id"] for tx in page_data)
+        log.info(f"  Fetched {len(all_transactions)} transactions so far, continuing from id {from_id}...")
+
+    log.info(f"Fetched {len(all_transactions)} total transactions for character {character_id}.")
+    return all_transactions
 
 
 def convert_datetime(iso_date):
     try:
         return datetime.strptime(iso_date, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
+        log.warning(f"Could not parse datetime: {iso_date!r}")
         return None
 
 
-def save_to_mariadb(transactions):
-    print(f"💾 Saving {len(transactions)} transactions...")  # DEBUG
-    attempts = 3
-    for attempt in range(attempts):
+def get_db_connection():
+    for attempt in range(1, 4):
         try:
-            conn = pymysql.connect(
+            return pymysql.connect(
                 host=DB_HOST,
                 user=DB_USER,
                 password=DB_PASSWORD,
                 database=DB_NAME,
                 connect_timeout=10
             )
-            cursor = conn.cursor()
+        except pymysql.err.OperationalError as e:
+            log.warning(f"DB connection failed (attempt {attempt}/3): {e}")
+            if attempt < 3:
+                time.sleep(3)
+            else:
+                raise
 
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS market_transactions (
-                    transaction_id BIGINT PRIMARY KEY,
-                    date DATETIME,
-                    type_id INT,
-                    type_name VARCHAR(255),
-                    unit_price FLOAT,
-                    quantity INT,
-                    client_id BIGINT,
-                    location_id BIGINT,
-                    is_buy_order BOOLEAN
-                )
-            """)
 
-            sql = """
-                INSERT INTO market_transactions (
-                    transaction_id, date, type_id, type_name, unit_price, quantity,
-                    client_id, location_id, is_buy_order
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    date = VALUES(date),
-                    type_id = VALUES(type_id),
-                    type_name = VALUES(type_name),
-                    unit_price = VALUES(unit_price),
-                    quantity = VALUES(quantity),
-                    client_id = VALUES(client_id),
-                    location_id = VALUES(location_id),
-                    is_buy_order = VALUES(is_buy_order)
-            """
+def ensure_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS market_transactions (
+            transaction_id BIGINT PRIMARY KEY,
+            character_id BIGINT,
+            date DATETIME,
+            type_id INT,
+            type_name VARCHAR(255),
+            unit_price DOUBLE,
+            quantity INT,
+            client_id BIGINT,
+            location_id BIGINT,
+            is_buy_order BOOLEAN
+        )
+    """)
+    # Migration: add character_id if this table existed before this column was introduced
+    cursor.execute("""
+        ALTER TABLE market_transactions
+        ADD COLUMN IF NOT EXISTS character_id BIGINT AFTER transaction_id
+    """)
 
-            values = [
-                (
+
+def save_to_mariadb(transactions, character_id):
+    log.info(f"Saving {len(transactions)} transactions for character {character_id}...")
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        ensure_table(cursor)
+
+        sql = """
+            INSERT INTO market_transactions (
+                transaction_id, character_id, date, type_id, type_name,
+                unit_price, quantity, client_id, location_id, is_buy_order
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                character_id  = VALUES(character_id),
+                date          = VALUES(date),
+                type_id       = VALUES(type_id),
+                type_name     = VALUES(type_name),
+                unit_price    = VALUES(unit_price),
+                quantity      = VALUES(quantity),
+                client_id     = VALUES(client_id),
+                location_id   = VALUES(location_id),
+                is_buy_order  = VALUES(is_buy_order)
+        """
+
+        values = []
+        skipped = 0
+        for tx in transactions:
+            try:
+                values.append((
                     tx["transaction_id"],
+                    character_id,
                     convert_datetime(tx["date"]),
                     tx["type_id"],
                     tx.get("type_name", "Unknown"),
@@ -128,54 +196,56 @@ def save_to_mariadb(transactions):
                     tx["client_id"],
                     tx["location_id"],
                     tx["is_buy"]
-                )
-                for tx in transactions
-            ]
+                ))
+            except KeyError as e:
+                log.warning(f"Skipping transaction {tx.get('transaction_id', '?')}: missing field {e}")
+                skipped += 1
 
-            if values:
-                cursor.executemany(sql, values)
-                print(f"✅ {len(values)} transactions processed.")
-
+        if values:
+            cursor.executemany(sql, values)
             conn.commit()
-            cursor.close()
-            conn.close()
-            return
-
-        except pymysql.err.OperationalError as e:
-            print(f"⚠️ DB connection lost (attempt {attempt+1}/{attempts}): {e}")
-            if attempt < attempts - 1:
-                time.sleep(3)
-            else:
-                raise
+            log.info(
+                f"Saved {len(values)} transactions for character {character_id}"
+                + (f" ({skipped} skipped due to missing fields)" if skipped else "")
+            )
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def run_fetcher():
-    print(f"🚀 Fetcher started at {datetime.now()} — first run starting now.")  # DEBUG start
+    if not CHARACTERS:
+        log.error(
+            "No characters configured. "
+            "Set CLIENT_ID_1, CLIENT_SECRET_1, REFRESH_TOKEN_1, CHARACTER_ID_1 (and _2, _3, ...) env vars."
+        )
+        return
+
+    log.info(f"Fetcher started — {len(CHARACTERS)} character(s) configured.")
 
     while True:
-        print(f"⏳ Starting transaction fetch at {datetime.now()}...")
+        log.info(f"Starting fetch cycle at {datetime.now()}")
 
         for character in CHARACTERS:
-            if not character["CLIENT_ID"]:
-                print(f"⚠️ Skipping character due to missing environment variables.")
-                continue
-
+            char_id = character["CHARACTER_ID"]
             try:
-                access_token = get_access_token(character["CLIENT_ID"], character["CLIENT_SECRET"], character["REFRESH_TOKEN"])
-                transactions = fetch_transactions(access_token, character["CHARACTER_ID"])
+                access_token = get_access_token(
+                    character["CLIENT_ID"],
+                    character["CLIENT_SECRET"],
+                    character["REFRESH_TOKEN"]
+                )
+                transactions = fetch_transactions(access_token, char_id)
                 if transactions:
-                    save_to_mariadb(transactions)
+                    save_to_mariadb(transactions, char_id)
                 else:
-                    print(f"⚠️ No new transactions for {character['CHARACTER_ID']}.")
-            except Exception as e:
-                print(f"❌ Error processing character {character['CHARACTER_ID']}: {e}")
-                traceback.print_exc(file=sys.stdout)
+                    log.warning(f"No transactions returned for character {char_id}.")
+            except Exception:
+                log.exception(f"Error processing character {char_id}")
 
-        for remaining in range(86400, 0, -3600):
-            print(f"🕒 Next run in {remaining // 3600} hour(s)...")
-            time.sleep(3600)
+        next_run = datetime.fromtimestamp(time.time() + FETCH_INTERVAL_HOURS * 3600)
+        log.info(f"Cycle complete. Next run at {next_run} (in {FETCH_INTERVAL_HOURS}h).")
+        time.sleep(FETCH_INTERVAL_HOURS * 3600)
 
 
 if __name__ == "__main__":
-    print("📢 Script running directly, calling run_fetcher()")  # DEBUG
     run_fetcher()
