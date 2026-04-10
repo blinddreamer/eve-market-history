@@ -252,6 +252,248 @@ def save_to_mariadb(transactions, character_id):
         conn.close()
 
 
+def ensure_contracts_tables(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS contracts (
+            contract_id           BIGINT PRIMARY KEY,
+            character_id          BIGINT,
+            issuer_id             BIGINT,
+            issuer_corporation_id BIGINT,
+            assignee_id           BIGINT,
+            acceptor_id           BIGINT,
+            start_location_id     BIGINT,
+            end_location_id       BIGINT,
+            type                  VARCHAR(50),
+            status                VARCHAR(50),
+            title                 VARCHAR(255),
+            for_corporation       BOOLEAN,
+            availability          VARCHAR(50),
+            date_issued           DATETIME,
+            date_expired          DATETIME,
+            date_accepted         DATETIME,
+            date_completed        DATETIME,
+            days_to_complete      INT,
+            price                 DOUBLE,
+            reward                DOUBLE,
+            collateral            DOUBLE,
+            buyout                DOUBLE,
+            volume                DOUBLE
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS contract_items (
+            record_id    BIGINT PRIMARY KEY,
+            contract_id  BIGINT,
+            type_id      INT,
+            type_name    VARCHAR(255),
+            quantity     INT,
+            raw_quantity INT,
+            is_included  BOOLEAN,
+            is_singleton BOOLEAN
+        )
+    """)
+
+
+def fetch_contracts(access_token, character_id):
+    """Fetch all personal contracts for a character, handling X-Pages pagination."""
+    base_url = f"https://esi.evetech.net/latest/characters/{character_id}/contracts/"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+
+    all_contracts = []
+    page = 1
+
+    while True:
+        response = requests.get(base_url, headers=headers, params={"page": page}, timeout=30)
+
+        if response.status_code == 420:
+            retry_after = int(response.headers.get("X-ESI-Error-Limit-Reset", 60))
+            log.warning(f"ESI error limit hit fetching contracts for {character_id}. Waiting {retry_after}s...")
+            time.sleep(retry_after)
+            continue
+
+        if response.status_code != 200:
+            raise Exception(f"ESI returned HTTP {response.status_code}: {response.text}")
+
+        page_data = response.json()
+        if not page_data:
+            break
+
+        all_contracts.extend(page_data)
+
+        total_pages = int(response.headers.get("X-Pages", 1))
+        if page >= total_pages:
+            break
+        page += 1
+
+    log.info(f"Fetched {len(all_contracts)} contracts for character {character_id}.")
+    return all_contracts
+
+
+def fetch_contract_items(access_token, character_id, contract_id):
+    """Fetch items for a single contract. Returns empty list for courier/no-item contracts."""
+    url = f"https://esi.evetech.net/latest/characters/{character_id}/contracts/{contract_id}/items/"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+
+    response = requests.get(url, headers=headers, timeout=30)
+
+    if response.status_code == 404:
+        return []  # Courier contracts have no items endpoint
+
+    if response.status_code == 420:
+        retry_after = int(response.headers.get("X-ESI-Error-Limit-Reset", 60))
+        log.warning(f"ESI rate limit hit fetching items for contract {contract_id}. Waiting {retry_after}s...")
+        time.sleep(retry_after)
+        return fetch_contract_items(access_token, character_id, contract_id)
+
+    if response.status_code != 200:
+        log.warning(f"Could not fetch items for contract {contract_id}: HTTP {response.status_code}")
+        return []
+
+    return response.json()
+
+
+def save_contracts_to_mariadb(contracts, character_id, access_token):
+    if not contracts:
+        return
+
+    log.info(f"Saving {len(contracts)} contracts for character {character_id}...")
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        ensure_contracts_tables(cursor)
+
+        contract_sql = """
+            INSERT INTO contracts (
+                contract_id, character_id, issuer_id, issuer_corporation_id,
+                assignee_id, acceptor_id, start_location_id, end_location_id,
+                type, status, title, for_corporation, availability,
+                date_issued, date_expired, date_accepted, date_completed,
+                days_to_complete, price, reward, collateral, buyout, volume
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s
+            )
+            ON DUPLICATE KEY UPDATE
+                status         = VALUES(status),
+                date_accepted  = VALUES(date_accepted),
+                date_completed = VALUES(date_completed),
+                acceptor_id    = VALUES(acceptor_id)
+        """
+
+        # Find which contract_ids are new so we only fetch items for those
+        existing_ids = set()
+        if contracts:
+            ids_placeholder = ",".join(["%s"] * len(contracts))
+            cursor.execute(
+                f"SELECT contract_id FROM contracts WHERE contract_id IN ({ids_placeholder})",
+                [c["contract_id"] for c in contracts]
+            )
+            existing_ids = {row[0] for row in cursor.fetchall()}
+
+        values = []
+        skipped = 0
+        for c in contracts:
+            try:
+                values.append((
+                    c["contract_id"],
+                    character_id,
+                    c["issuer_id"],
+                    c["issuer_corporation_id"],
+                    c.get("assignee_id"),
+                    c.get("acceptor_id"),
+                    c.get("start_location_id"),
+                    c.get("end_location_id"),
+                    c.get("type"),
+                    c.get("status"),
+                    c.get("title", ""),
+                    c.get("for_corporation", False),
+                    c.get("availability"),
+                    convert_datetime(c["date_issued"]),
+                    convert_datetime(c["date_expired"]) if c.get("date_expired") else None,
+                    convert_datetime(c["date_accepted"]) if c.get("date_accepted") else None,
+                    convert_datetime(c["date_completed"]) if c.get("date_completed") else None,
+                    c.get("days_to_complete"),
+                    c.get("price", 0),
+                    c.get("reward", 0),
+                    c.get("collateral", 0),
+                    c.get("buyout", 0),
+                    c.get("volume", 0),
+                ))
+            except KeyError as e:
+                log.warning(f"Skipping contract {c.get('contract_id', '?')}: missing field {e}")
+                skipped += 1
+
+        if values:
+            cursor.executemany(contract_sql, values)
+            conn.commit()
+            log.info(
+                f"Saved {len(values)} contracts for character {character_id}"
+                + (f" ({skipped} skipped)" if skipped else "")
+            )
+
+        # Fetch and save items only for new item_exchange / auction contracts
+        new_contracts = [
+            c for c in contracts
+            if c["contract_id"] not in existing_ids
+            and c.get("type") in ("item_exchange", "auction")
+        ]
+
+        if new_contracts:
+            log.info(f"Fetching items for {len(new_contracts)} new contracts...")
+            all_items = []
+            for c in new_contracts:
+                items = fetch_contract_items(access_token, character_id, c["contract_id"])
+                for item in items:
+                    item["contract_id"] = c["contract_id"]
+                all_items.extend(items)
+                time.sleep(0.1)  # be polite to ESI
+
+            if all_items:
+                # Resolve type names
+                type_ids = [i["type_id"] for i in all_items if "type_id" in i]
+                type_names = resolve_type_names(type_ids)
+
+                item_sql = """
+                    INSERT IGNORE INTO contract_items (
+                        record_id, contract_id, type_id, type_name,
+                        quantity, raw_quantity, is_included, is_singleton
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """
+                item_values = []
+                for item in all_items:
+                    try:
+                        type_id = item["type_id"]
+                        item_values.append((
+                            item["record_id"],
+                            item["contract_id"],
+                            type_id,
+                            type_names.get(type_id, f"Unknown ({type_id})"),
+                            item.get("quantity", 1),
+                            item.get("raw_quantity"),
+                            item.get("is_included", True),
+                            item.get("is_singleton", False),
+                        ))
+                    except KeyError as e:
+                        log.warning(f"Skipping contract item: missing field {e}")
+
+                if item_values:
+                    cursor.executemany(item_sql, item_values)
+                    conn.commit()
+                    log.info(f"Saved {len(item_values)} contract items.")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def run_fetcher():
     if not CHARACTERS:
         log.error(
@@ -278,6 +520,12 @@ def run_fetcher():
                     save_to_mariadb(transactions, char_id)
                 else:
                     log.warning(f"No transactions returned for character {char_id}.")
+
+                contracts = fetch_contracts(access_token, char_id)
+                if contracts:
+                    save_contracts_to_mariadb(contracts, char_id, access_token)
+                else:
+                    log.warning(f"No contracts returned for character {char_id}.")
             except Exception:
                 log.exception(f"Error processing character {char_id}")
 
